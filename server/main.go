@@ -2,15 +2,14 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 type Cotacao struct {
@@ -18,6 +17,7 @@ type Cotacao struct {
 }
 
 type CotacaoDados struct {
+	Id         int    `gorm:"primaryKey"`
 	Ask        string `json:"ask"`
 	Bid        string `json:"bid"`
 	Code       string `json:"code"`
@@ -29,6 +29,13 @@ type CotacaoDados struct {
 	PctChange  string `json:"pctChange"`
 	Timestamp  string `json:"timestamp"`
 	VarBid     string `json:"varBid"`
+}
+
+type CotacaoDadosPersistir struct {
+	Id        int    `gorm:"primaryKey"`
+	Bid       string `json:"bid"`
+	Timestamp string `json:"timestamp"`
+	DataInc   time.Time
 }
 
 func main() {
@@ -85,43 +92,42 @@ func cotacaoDolarBuscar() (*Cotacao, error) {
 		return nil, err
 	}
 
-	// Open conection with db
-	db, err := sql.Open("mysql", "root:root@tcp(localhost:3306)/clientserver")
-	if err != nil {
-		return nil, err
-	}
-
 	// Call function that is going to store the current exchange rate
 	// Using a go routime because the client wants to get the exchange rate
 	// and for them it doesn't matter if the server was able to persist the data
 	// since it is an internal controll
 	// it would be interesting using a monitoring system to get notify if an error occurs in that function
 	// for example Sentry
-	go salvarCotacaoAtual(db, response.Cotacao.Bid, response.Cotacao.Timestamp)
+	go salvarCotacaoAtual(response.Cotacao)
 
 	return &response, err
 
 }
 
-func salvarCotacaoAtual(db *sql.DB, bid, timestamp string) {
+func salvarCotacaoAtual(cotacao CotacaoDados) {
 	// Set context with 10ms of timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	// Prepare statemnte
-	// Good practice for avoiding sql injection
-	stmt, err := db.Prepare("insert into cotacoes(id, timestamp, bid) values(?, ?, ?)")
+	db, err := gorm.Open(sqlite.Open("test.db"), &gorm.Config{})
 	if err != nil {
 		fmt.Println(err)
-		// Send error to monitoring system
 	}
-	defer stmt.Close()
 
-	// Exec insert using the pre-defined context
-	_, err = stmt.ExecContext(ctx, uuid.New().String(), timestamp, bid)
+	err = db.AutoMigrate(&CotacaoDadosPersistir{})
 	if err != nil {
 		fmt.Println(err)
-		// Send error to monitoring system
+	}
+
+	cotacaoInserir := &CotacaoDadosPersistir{
+		Bid:       cotacao.Bid,
+		Timestamp: cotacao.Timestamp,
+		DataInc:   time.Now(),
+	}
+	err = db.WithContext(ctx).
+		Create(&cotacaoInserir).Error
+	if err != nil {
+		fmt.Println(err)
 	}
 
 }
